@@ -1,0 +1,80 @@
+name: Build PRoot Android ARM64 (PIE Fixed)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # 1️⃣ Install required packages
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          build-essential \
+          git \
+          wget \
+          unzip \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config
+
+    # 2️⃣ Clone official PRoot repo
+    - name: Clone PRoot source
+      run: |
+        git clone https://github.com/proot-me/proot.git
+        cd proot
+        git fetch --tags
+        git checkout $(git describe --tags `git rev-list --tags --max-count=1`)
+
+    # 3️⃣ Download Android NDK (Modern version)
+    - name: Download Android NDK
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        unzip android-ndk-r26d-linux.zip
+        echo "NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+
+    # 4️⃣ Setup Android cross compile environment (FIXED)
+    - name: Build for Android ARM64 (PIE ENABLED)
+      run: |
+        export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+        export TARGET=aarch64-linux-android
+        export API=21
+
+        export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
+        export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
+        export AR=$TOOLCHAIN/bin/llvm-ar
+        export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+
+        # 🔥 IMPORTANT FIX
+        export CFLAGS="-fPIE -fPIC"
+        export LDFLAGS="-fPIE -pie"
+
+        cd proot
+
+        ./bootstrap.sh
+        ./configure --host=$TARGET
+        make clean
+        make -j$(nproc)
+
+    # 5️⃣ Verify binary type (VERY IMPORTANT)
+    - name: Verify binary
+      run: |
+        file proot/src/proot
+        readelf -h proot/src/proot | grep Type
+
+    # 6️⃣ Strip binary (reduce size)
+    - name: Strip binary
+      run: |
+        $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip proot/src/proot
+
+    # 7️⃣ Upload artifact
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: proot-android-arm64-pie
+        path: proot/src/proot
