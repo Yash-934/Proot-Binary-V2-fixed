@@ -1,4 +1,4 @@
-name: Build PRoot Android ARM64 (talloc-stub + robust)
+name: Build PRoot Android ARM64 (Termux Style Clean)
 
 on:
   workflow_dispatch:
@@ -7,127 +7,67 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      API_LEVEL: 21
+      API: 21
 
     steps:
-    - name: Install host deps
-      run: |
-        set -eux
-        sudo apt update
-        sudo apt install -y build-essential git wget unzip perl
 
-    - name: Clone PRoot
+    - name: Install dependencies
       run: |
-        set -eux
+        sudo apt update
+        sudo apt install -y git wget unzip build-essential
+
+    - name: Clone official PRoot
+      run: |
         git clone https://github.com/proot-me/proot.git
         cd proot
         git checkout v5.4.0
 
     - name: Download Android NDK r26d
       run: |
-        set -eux
         wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
         unzip -q android-ndk-r26d-linux.zip
         echo "NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-    - name: Neutralize pkg-config / talloc checks in GNUmakefile (safe)
+    - name: Setup Android toolchain
       run: |
-        set -eux
+        echo "TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+        echo "TARGET=aarch64-linux-android" >> $GITHUB_ENV
+
+    - name: Force disable talloc + pkg-config
+      run: |
         cd proot/src
-        cp GNUmakefile GNUmakefile.orig || true
-        perl -0777 -pe '
-          s/\$\(\s*shell\s+pkg-config\s+--cflags\s+talloc\s*\)/ /g;
-          s/\$\(\s*shell\s+pkg-config\s+--libs\s+talloc\s*\)/ /g;
-          s/`pkg-config\s+--cflags\s+talloc`/ /g;
-          s/`pkg-config\s+--libs\s+talloc`/ /g;
-          s/pkg-config\s+--cflags\s+talloc/true/g;
-          s/pkg-config\s+--libs\s+talloc/true/g;
-        ' -i GNUmakefile
+        sed -i 's/pkg-config/true/g' GNUmakefile || true
 
-        echo "==== GNUmakefile head (post-edit) ===="
-        head -n 80 GNUmakefile || true
-
-    - name: Pre-build checks & create talloc stub
+    - name: Build for Android ARM64 (PIE)
       run: |
-        set -eux
-        cd proot/src
-
-        echo "=== Listing src/ (first 200 lines) ==="
-        ls -la | sed -n '1,200p'
-
-        # Ensure cli header exists (if not, show debug and fail early)
-        if [ ! -f cli/note.h ]; then
-          echo "ERROR: expected header cli/note.h not found in proot/src/cli"
-          echo "Listing proot/src/cli directory:"
-          ls -la cli || true
-          echo "Dumping GNUmakefile context for debug:"
-          sed -n '1,200p' GNUmakefile || true
-          exit 1
-        fi
-
-        # Create a minimal talloc.h stub so source that includes <talloc.h> can compile
-        # This is a lightweight compatibility shim (only for builds that disable real talloc)
-        if [ ! -f talloc.h ]; then
-          cat > talloc.h <<'EOF'
-#ifndef TALLOC_H
-#define TALLOC_H
-#include <stdlib.h>
-#include <stddef.h>
-typedef void * talloc_ctx;
-static inline void *talloc_memctx_alloc(void *ctx, size_t size) { return malloc(size); }
-static inline void talloc_free_wrapper(void *p) { free(p); }
-#define talloc_free(p) talloc_free_wrapper(p)
-#endif /* TALLOC_H */
-EOF
-        fi
-
-        echo "Created talloc.h stub (first 30 lines):"
-        sed -n '1,30p' talloc.h || true
-
-    - name: Build for Android ARM64 (force no-talloc & PIE)
-      run: |
-        set -eux
-        export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
-        export TARGET=aarch64-linux-android
-        export API=${API_LEVEL}
-
         export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
         export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
         export AR=$TOOLCHAIN/bin/llvm-ar
         export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
         export STRIP=$TOOLCHAIN/bin/llvm-strip
 
-        # Ensure pkg-config doesn't pull in host libs
         export PKG_CONFIG=/bin/false
-
-        # PIE flags for Android
         export CFLAGS="-fPIE -fPIC"
         export LDFLAGS="-fPIE -pie"
-
-        # Force macro to disable talloc usage in source and add include of current dir
-        export CPPFLAGS="-DHAVE_TALLOC=0 -I."
+        export CPPFLAGS="-DHAVE_TALLOC=0"
 
         cd proot/src
 
-        echo "==== GNUmakefile excerpt just before make ===="
-        head -n 40 GNUmakefile || true
+        make WITHOUT_TALLOC=1 HAVE_TALLOC=0 \
+             CC="$CC" AR="$AR" RANLIB="$RANLIB" \
+             CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
+             CPPFLAGS="$CPPFLAGS" -j$(nproc)
 
-        # Final build with explicit overrides (defensive)
-        make HAVE_TALLOC=0 WITHOUT_TALLOC=1 CPPFLAGS="$CPPFLAGS" CC="$CC" AR="$AR" RANLIB="$RANLIB" -j$(nproc)
-
-    - name: Verify Binary Type
+    - name: Verify binary
       run: |
-        set -eux
         file proot/src/proot || true
         readelf -h proot/src/proot | grep Type || true
-        ldd proot/src/proot || true || true
 
-    - name: Strip Binary
+    - name: Strip binary
       run: |
-        set -eux
-        $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip proot/src/proot || true
+        $TOOLCHAIN/bin/llvm-strip proot/src/proot || true
 
-    - name: Upload Artifact
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: proot-android-arm64-v5.4.0
