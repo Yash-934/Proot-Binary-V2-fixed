@@ -1,4 +1,4 @@
-name: Build Android PRoot (Termux Style - Modern NDK)
+name: Build Android PRoot (Correct Termux Method)
 
 on:
   push:
@@ -6,76 +6,52 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      proot_version:
-        description: 'PRoot version/commit'
-        required: true
-        default: '5.1.107'
-      termux_commit:
-        description: 'Termux proot commit hash'
-        required: true
-        default: '228a5f28b078f4e2504de46758ce17948f73f507'
 
 jobs:
   build-android-aarch64:
     runs-on: ubuntu-latest
-    name: Build Android PRoot - AArch64 (Modern NDK)
+    name: Build Android PRoot - AArch64 (Correct Method)
     
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Setup Android NDK (Modern Method)
+    - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
       with:
         ndk-version: r25c
         add-to-path: true
-        link-to-sdk: true
 
     - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          wget \
-          tar \
-          file \
-          git \
-          make \
-          python3 \
-          bison \
-          flex \
-          libtalloc-dev
+          wget file git make python3 bison flex libtalloc-dev
 
     - name: Clone Termux PRoot Source
       run: |
-        # Clone Termux fork (official Android port)
+        # Clone Termux fork
         git clone --depth 1 \
           https://github.com/termux/proot.git \
           $HOME/proot-src
         
         cd $HOME/proot-src
         
-        # Checkout specific stable commit
+        # Checkout stable commit
         git fetch --depth=1 origin 228a5f28b078f4e2504de46758ce17948f73f507
         git checkout 228a5f28b078f4e2504de46758ce17948f73f507
 
-    - name: Build with Modern NDK Toolchain
+    - name: Build with Modern NDK (Correct Method)
       run: |
         cd $HOME/proot-src
         
-        # Modern NDK: Direct toolchain use (no standalone needed)
-        # NDK r25+ has prebuilt toolchains in toolchains/llvm/prebuilt/linux-x86_64/bin/
+        # Modern NDK toolchain
         export NDK=$ANDROID_NDK_HOME
-        
-        # Set up compiler (modern NDK style)
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang
         export CXX=$TOOLCHAIN/bin/aarch64-linux-android21-clang++
         export AR=$TOOLCHAIN/bin/llvm-ar
         export STRIP=$TOOLCHAIN/bin/llvm-strip
-        
-        # Set sysroot (modern NDK automatically handles this)
-        export SYSROOT=$TOOLCHAIN/sysroot
         
         # Termux-style flags
         export CFLAGS="-fPIC -fPIE -pie -O2"
@@ -85,34 +61,34 @@ jobs:
         # Unbundle loader (Termux style)
         export PROOT_UNBUNDLE_LOADER=1
         
-        # Clean build
+        # Clean
         make -C src clean
         
-        # Build loader first
-        make -C src loader.elf build.h
+        # Build proot directly (NO loader.elf step needed!)
+        # Termux mein directly 'make -C src' se proot banta hai
+        make -C src
         
-        # Build proot binary
-        make -C src proot
+        # Build loader separately (Termux style)
+        make -C loader
         
-        # Verify output
+        # Verify
         file src/proot
-        ls -la src/proot
+        file loader/loader
 
     - name: Prepare Android Binary
       run: |
         mkdir -p $HOME/android-proot-release
         
-        # Copy binaries
+        # Copy binaries (Termux style paths)
         cp $HOME/proot-src/src/proot \
            $HOME/android-proot-release/proot-android-aarch64
         
-        cp $HOME/proot-src/src/loader/loader \
+        cp $HOME/proot-src/loader/loader \
            $HOME/android-proot-release/loader-aarch64
         
         # Create wrapper script
         cat > $HOME/android-proot-release/proot-wrapper.sh << 'EOF'
         #!/system/bin/sh
-        # Android PRoot Wrapper
         PROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
         export PROOT_LOADER="$PROOT_DIR/loader-aarch64"
         exec "$PROOT_DIR/proot-android-aarch64" "$@"
@@ -123,52 +99,28 @@ jobs:
         
         # Create README
         cat > $HOME/android-proot-release/README.txt << EOF
-        Android PRoot Binary (Termux Style - Modern NDK)
-        ==================================================
+        Android PRoot Binary (Correct Termux Method)
+        ==============================================
         
         Version: Termux commit 228a5f28
         Architecture: aarch64/arm64
-        Target: Android API 21+ (Android 5.0+)
-        NDK: r25c (Modern toolchain, no standalone)
+        Target: Android API 21+
         
         Files:
         - proot-android-aarch64: Main PIE binary
         - loader-aarch64: Loader helper
-        - proot-wrapper.sh: Convenience wrapper
+        - proot-wrapper.sh: Wrapper script
         
         Usage:
-        1. Push to device: adb push proot-android-aarch64 /data/local/tmp/
-        2. Make executable: chmod +x /data/local/tmp/proot-android-aarch64
-        3. Run: /data/local/tmp/proot-android-aarch64 -r /path/to/rootfs /bin/sh
-        
-        Or use wrapper:
         ./proot-wrapper.sh -r /path/to/rootfs /bin/sh
         
         Build Date: $(date)
-        Build Method: Modern NDK direct toolchain (no standalone)
         EOF
-
-    - name: Verify PIE Binary
-      run: |
-        # Check if it's PIE (Position Independent Executable)
-        file $HOME/android-proot-release/proot-android-aarch64
-        
-        # Verify with readelf
-        if command -v readelf >/dev/null 2>&1; then
-          echo "=== ELF Header Info ==="
-          readelf -h $HOME/android-proot-release/proot-android-aarch64 | grep "Type:"
-          
-          if readelf -h $HOME/android-proot-release/proot-android-aarch64 | grep -q "DYN"; then
-            echo "✓ VERIFIED: Binary is PIE (DYN type)"
-          else
-            echo "⚠ Warning: Binary may not be PIE"
-          fi
-        fi
 
     - name: Upload Android Binary
       uses: actions/upload-artifact@v4
       with:
-        name: proot-android-aarch64-modern-ndk
+        name: proot-android-aarch64-correct
         path: |
           ~/android-proot-release/proot-android-aarch64
           ~/android-proot-release/loader-aarch64
@@ -178,7 +130,7 @@ jobs:
 
   build-android-armv7:
     runs-on: ubuntu-latest
-    name: Build Android PRoot - ARMv7 (Modern NDK)
+    name: Build Android PRoot - ARMv7
     
     steps:
     - name: Checkout Repository
@@ -197,19 +149,16 @@ jobs:
 
     - name: Build ARMv7 Binary
       run: |
-        # Clone Termux proot
         git clone --depth 1 https://github.com/termux/proot.git $HOME/proot-armv7
         cd $HOME/proot-armv7
         git fetch --depth=1 origin 228a5f28b078f4e2504de46758ce17948f73f507
         git checkout 228a5f28b078f4e2504de46758ce17948f73f507
         
-        # Modern NDK for ARMv7
         export NDK=$ANDROID_NDK_HOME
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang
         export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang++
         export AR=$TOOLCHAIN/bin/llvm-ar
-        export SYSROOT=$TOOLCHAIN/sysroot
         
         export CFLAGS="-fPIC -fPIE -pie -O2"
         export LDFLAGS="-pie -ltalloc"
@@ -217,171 +166,16 @@ jobs:
         export PROOT_UNBUNDLE_LOADER=1
         
         make -C src clean
-        make -C src loader.elf build.h
-        make -C src proot
+        make -C src
+        make -C loader
         
         mkdir -p $HOME/android-proot-armv7
         cp src/proot $HOME/android-proot-armv7/proot-android-armv7
-        cp src/loader/loader $HOME/android-proot-armv7/loader-armv7
+        cp loader/loader $HOME/android-proot-armv7/loader-armv7
 
     - name: Upload ARMv7 Binary
       uses: actions/upload-artifact@v4
       with:
-        name: proot-android-armv7-modern-ndk
+        name: proot-android-armv7-correct
         path: ~/android-proot-armv7/*
         if-no-files-found: error
-
-  build-x86_64:
-    runs-on: ubuntu-latest
-    name: Build Linux PRoot - x86_64 (Alpine Static)
-    
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build Static PRoot for Linux x86_64
-      run: |
-        cat > Dockerfile.x86_64 << 'EOF'
-        FROM alpine:3.19 AS builder
-        
-        RUN apk add --no-cache \
-            build-base \
-            git \
-            libarchive-dev \
-            libarchive-static \
-            linux-headers \
-            lzo-dev \
-            make \
-            musl-dev \
-            talloc-dev \
-            talloc-static \
-            uthash-dev \
-            zlib-static
-        
-        # Clone upstream PRoot for Linux (not Termux fork)
-        RUN git clone --depth 1 --branch v5.4.0 \
-            https://github.com/proot-me/proot.git /usr/src/proot
-        
-        WORKDIR /usr/src/proot
-        
-        # Static build for Linux
-        RUN export LDFLAGS="-static -ltalloc -larchive -llzo2 -lz" && \
-            make -C src clean && \
-            make -C src loader.elf build.h && \
-            make -C src proot
-        
-        RUN mkdir -p /output && \
-            cp src/proot /output/proot-static-x86_64
-        
-        FROM scratch AS export
-        COPY --from=builder /output/proot-static-x86_64 /
-        EOF
-        
-        docker buildx build \
-          --platform linux/amd64 \
-          --file Dockerfile.x86_64 \
-          --target export \
-          --output type=local,dest=./output \
-          .
-
-    - name: Upload x86_64 Binary
-      uses: actions/upload-artifact@v4
-      with:
-        name: proot-static-x86_64-linux
-        path: ./output/proot-static-x86_64
-        if-no-files-found: error
-
-  release:
-    needs: [build-android-aarch64, build-android-armv7, build-x86_64]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    
-    steps:
-    - name: Download All Artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-
-    - name: Prepare Release Assets
-      run: |
-        mkdir -p release
-        
-        # Android AArch64
-        cp artifacts/proot-android-aarch64-modern-ndk/proot-android-aarch64 release/
-        cp artifacts/proot-android-aarch64-modern-ndk/loader-aarch64 release/
-        cp artifacts/proot-android-aarch64-modern-ndk/proot-wrapper.sh release/proot-wrapper-aarch64.sh
-        
-        # Android ARMv7
-        cp artifacts/proot-android-armv7-modern-ndk/proot-android-armv7 release/
-        cp artifacts/proot-android-armv7-modern-ndk/loader-armv7 release/
-        
-        # Linux x86_64
-        cp artifacts/proot-static-x86_64-linux/proot-static-x86_64 release/
-        
-        # Create archives
-        cd release
-        
-        # Android AArch64 package
-        tar -czf proot-android-aarch64-termux-style.tar.gz \
-          proot-android-aarch64 \
-          loader-aarch64 \
-          proot-wrapper-aarch64.sh
-        
-        # Android ARMv7 package
-        tar -czf proot-android-armv7-termux-style.tar.gz \
-          proot-android-armv7 \
-          loader-armv7
-        
-        # Linux x86_64 package
-        tar -czf proot-static-x86_64-linux.tar.gz \
-          proot-static-x86_64
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: release/*.tar.gz
-        body: |
-          ## 🎯 Android-Compatible PRoot (Modern NDK Build)
-          
-          ### 📱 Android Binaries (Termux Style)
-          - **AArch64**: Modern 64-bit Android devices (Android 5.0+)
-          - **ARMv7**: Older 32-bit ARM devices
-          
-          ### 💻 Linux Binary
-          - **x86_64**: Standard Linux servers/desktops (fully static)
-          
-          ### 🔧 Build Details
-          | Aspect | Android | Linux |
-          |--------|---------|-------|
-          | Source | termux/proot | proot-me/proot |
-          | Toolchain | NDK r25c (modern) | Alpine GCC |
-          | Type | PIE (DYN) | Static (EXEC) |
-          | talloc | System library | Static linked |
-          | API Level | 21+ | N/A |
-          
-          ### 🚀 Quick Start (Android)
-          ```bash
-          # Download and extract
-          tar -xzf proot-android-aarch64-termux-style.tar.gz
-          
-          # Push to device
-          adb push proot-android-aarch64 /data/local/tmp/
-          adb push loader-aarch64 /data/local/tmp/
-          
-          # Execute
-          adb shell chmod +x /data/local/tmp/proot-android-aarch64
-          adb shell /data/local/tmp/proot-android-aarch64 -r /data/local/tmp/rootfs /bin/sh
-          ```
-          
-          ### 🧠 Why Different Builds?
-          - **Android**: Needs PIE binaries for modern Android security
-          - **Linux**: Static binaries work universally
-          
-          ### 🙏 Credits
-          - Termux team for Android patches and build system
-          - PRoot original authors
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
