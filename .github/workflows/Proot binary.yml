@@ -1,4 +1,4 @@
-name: Build PRoot Android ARM64 (FINAL FIX)
+name: Build PRoot Android ARM64 (Stable Final)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential git wget unzip
+        sudo apt install -y build-essential git wget unzip pkg-config
 
     - name: Clone PRoot source
       run: |
@@ -20,13 +20,13 @@ jobs:
         cd proot
         git checkout v5.4.0
 
-    - name: Download Android NDK
+    - name: Download Android NDK r26d
       run: |
         wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-        unzip android-ndk-r26d-linux.zip
+        unzip -q android-ndk-r26d-linux.zip
         echo "NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-    - name: Build for Android ARM64 (PIE ENABLED)
+    - name: Build Android ARM64 PIE Binary
       run: |
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export TARGET=aarch64-linux-android
@@ -40,19 +40,19 @@ jobs:
         export LDFLAGS="-fPIE -pie"
 
         cd proot/src
-        make -j$(nproc)
+        make WITHOUT_TALLOC=1 -j$(nproc)
 
-    - name: Verify binary
+    - name: Verify Binary Type
       run: |
         file proot/src/proot
         readelf -h proot/src/proot | grep Type
 
-    - name: Strip binary
+    - name: Strip Binary (Reduce Size)
       run: |
         $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip proot/src/proot
 
-    - name: Upload artifact
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: proot-android-arm64-pie
+        name: proot-android-arm64-v5.4.0
         path: proot/src/proot
