@@ -1,4 +1,4 @@
-name: Build PRoot Android ARM64 (REAL FINAL - talloc bypass)
+name: Build PRoot Android ARM64 (Robust talloc bypass)
 
 on:
   workflow_dispatch:
@@ -12,48 +12,52 @@ jobs:
     steps:
     - name: Install host deps
       run: |
+        set -eux
         sudo apt update
-        sudo apt install -y build-essential git wget unzip
+        sudo apt install -y build-essential git wget unzip perl
 
     - name: Clone PRoot
       run: |
+        set -eux
         git clone https://github.com/proot-me/proot.git
         cd proot
         git checkout v5.4.0
 
     - name: Download Android NDK r26d
       run: |
+        set -eux
         wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
         unzip -q android-ndk-r26d-linux.zip
         echo "NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-    - name: Prepare Makefile to ignore pkg-config talloc checks
+    - name: Neutralize pkg-config / talloc checks in GNUmakefile (safe)
       run: |
-        # Work in src because that's where compilation happens and where GNUmakefile lives
+        set -eux
         cd proot/src
 
-        # Backup original GNUmakefile (for debugging if needed)
+        # backup
         cp GNUmakefile GNUmakefile.orig || true
 
-        # Replace common pkg-config invocations that look for talloc so they don't inject flags
-        # This neutralizes: $(shell pkg-config --cflags talloc)  and  $(shell pkg-config --libs talloc)
-        sed -i "s/$(shell pkg-config --cflags talloc)/ /g" GNUmakefile || true
-        sed -i "s/$(shell pkg-config --libs talloc)/ /g" GNUmakefile || true
+        # Use perl (safer than sed here) to neutralize pkg-config/talloc expansions
+        # Replace $(shell pkg-config --cflags talloc) and $(shell pkg-config --libs talloc)
+        perl -0777 -pe '
+          s/\$\(\s*shell\s+pkg-config\s+--cflags\s+talloc\s*\)/ /g;
+          s/\$\(\s*shell\s+pkg-config\s+--libs\s+talloc\s*\)/ /g;
+          s/`pkg-config\s+--cflags\s+talloc`/ /g;
+          s/`pkg-config\s+--libs\s+talloc`/ /g;
+          s/pkg-config\s+--cflags\s+talloc/true/g;
+          s/pkg-config\s+--libs\s+talloc/true/g;
+        ' -i GNUmakefile
 
-        # Another style: pkg-config may be invoked via backticks - neutralize those too
-        sed -i "s/`pkg-config --cflags talloc`/ /g" GNUmakefile || true
-        sed -i "s/`pkg-config --libs talloc`/ /g" GNUmakefile || true
-
-        # Also comment-out direct pkg-config calls if present (safe no-op)
-        sed -i "s/pkg-config --cflags talloc/true/g" GNUmakefile || true
-        sed -i "s/pkg-config --libs talloc/true/g" GNUmakefile || true
-
-        # Print a snippet for debugging in the Actions log
-        echo "==== GNUmakefile head (after edits) ===="
-        head -n 80 GNUmakefile || true
+        # Show some context for debug
+        echo "==== GNUmakefile lines with 'talloc' (post-edit) ===="
+        grep -n "talloc" -n GNUmakefile || true
+        echo "==== GNUmakefile head (post-edit) ===="
+        head -n 120 GNUmakefile || true
 
     - name: Build for Android ARM64 (force no-talloc & PIE)
       run: |
+        set -eux
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export TARGET=aarch64-linux-android
         export API=${API_LEVEL}
@@ -64,35 +68,34 @@ jobs:
         export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
         export STRIP=$TOOLCHAIN/bin/llvm-strip
 
-        # Make sure pkg-config (if called) won't find host libs
+        # defensive: ensure pkg-config won't find host libs
         export PKG_CONFIG=/bin/false
 
-        # PIE flags (very important for Android/Termux)
+        # PIE flags for Android
         export CFLAGS="-fPIE -fPIC"
         export LDFLAGS="-fPIE -pie"
 
-        # Additional compile-time macro to disable talloc usage in source
+        # Force macro to disable talloc usage in source
         export CPPFLAGS="-DHAVE_TALLOC=0"
 
-        # Build from src directory (where the Makefile lives)
         cd proot/src
 
-        # Extra defensive: print makefile few lines to verify our sed worked
-        echo "==== GNUmakefile excerpt before make ===="
-        head -n 50 GNUmakefile || true
+        echo "==== GNUmakefile excerpt just before make ===="
+        head -n 40 GNUmakefile || true
 
-        # Run make with explicit overrides: ensure talloc is disabled
+        # Final build with explicit overrides
         make HAVE_TALLOC=0 WITHOUT_TALLOC=1 CPPFLAGS="$CPPFLAGS" CC="$CC" AR="$AR" RANLIB="$RANLIB" -j$(nproc)
 
     - name: Verify Binary Type
       run: |
+        set -eux
         file proot/src/proot || true
         readelf -h proot/src/proot | grep Type || true
-        echo "---- ldd (should say not a dynamic executable or show libs) ----"
-        ldd proot/src/proot || true
+        ldd proot/src/proot || true || true
 
     - name: Strip Binary
       run: |
+        set -eux
         $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip proot/src/proot || true
 
     - name: Upload Artifact
