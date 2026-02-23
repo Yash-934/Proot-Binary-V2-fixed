@@ -1,4 +1,4 @@
-name: Build PRoot Android ARM64 (PIE Final)
+name: Build PRoot Android ARM64 (FINAL FIX)
 
 on:
   workflow_dispatch:
@@ -33,14 +33,13 @@ jobs:
         export API=21
 
         export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
-        export CXX=$TOOLCHAIN/bin/${TARGET}${API}-clang++
         export AR=$TOOLCHAIN/bin/llvm-ar
         export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
 
         export CFLAGS="-fPIE -fPIC"
         export LDFLAGS="-fPIE -pie"
 
-        cd proot
+        cd proot/src
         make -j$(nproc)
 
     - name: Verify binary
